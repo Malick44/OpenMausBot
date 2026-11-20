@@ -1,0 +1,81 @@
+# OpenMausBot on Coolify behind a Cloudflare Tunnel. Nothing is published on the
+# host: cloudflared dials out to Cloudflare, and traffic for ${DOMAIN} flows
+#   Cloudflare -> cloudflared -> edge (Caddy :80) -> omb (Unix sockets in omb-edge)
+# The edge is upstream's deploy/local Caddyfile: requests for DOMAIN from a
+# private-network peer (cloudflared on this compose network) are treated as HTTPS.
+#
+# Coolify environment variables:
+#   DOMAIN                   public hostname, e.g. bot.ai-orbit-studio.com
+#   CLOUDFLARE_TUNNEL_TOKEN  token of the Cloudflare tunnel whose public hostname
+#                            DOMAIN routes to http://edge:80
+#   OMB_BASE_IMAGE, ENGINES  optional overrides
+services:
+  omb:
+    init: true
+    shm_size: 512m
+    build:
+      context: ./deploy/local
+      args:
+        BASE_IMAGE: ${OMB_BASE_IMAGE:-ghcr.io/milind-soni/openmausbot:v0.1.173}
+        ENGINES: ${ENGINES:-@anthropic-ai/claude-code @openai/codex}
+    restart: unless-stopped
+    volumes:
+      - omb-data:/data
+      - omb-edge:/run/openmausbot
+    environment:
+      OMB_PORT: "8799"
+      OMB_WEBHOOK_PORT: "8800"
+      OMB_TUNNEL_SOCKET: /run/openmausbot/http.sock
+      OMB_WEBHOOK_SOCKET: /run/openmausbot/hooks.sock
+      OMB_PUBLIC_URL: https://${DOMAIN}
+      OMB_WEBHOOK_PUBLIC_URL: https://${DOMAIN}
+      OMB_SERVER_NAME: ${OMB_SERVER_NAME:-OpenMausBot}
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8799/api/health', { signal: AbortSignal.timeout(4000) }).then(async r => { if (!r.ok || !(await r.text()).includes('openmausbot')) process.exit(1); }).catch(() => process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  edge:
+    build:
+      context: ./deploy/coolify/edge
+    restart: unless-stopped
+    depends_on:
+      omb:
+        condition: service_started
+    environment:
+      OMB_HTTPS_HOST: ${DOMAIN}
+      # Only peers on the private compose network can reach the edge at all
+      # (no published port); of those, only they may claim HTTPS for DOMAIN.
+      OMB_TRUSTED_PROXY_CIDRS: "10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
+    volumes:
+      - omb-edge:/run/openmausbot
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.11.1
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      edge:
+        condition: service_started
+
+volumes:
+  omb-data:
+  # The two sockets: in memory, made afresh by the server at each start.
+  omb-edge:
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: mode=1777,size=1m

@@ -8,7 +8,10 @@
 #   DOMAIN                   public hostname, e.g. bot.ai-orbit-studio.com
 #   CLOUDFLARE_TUNNEL_TOKEN  token of the Cloudflare tunnel whose public hostname
 #                            DOMAIN routes to http://edge:80
-#   OMB_BASE_IMAGE, ENGINES  optional overrides
+#   ENGINES                  optional: engine CLIs baked into the image
+# The base image version is pinned below and bumped by
+# .github/workflows/coolify-track-release.yml (not a Coolify variable, so the
+# bump is never shadowed by a stored value).
 services:
   omb:
     init: true
@@ -16,7 +19,7 @@ services:
     build:
       context: ./deploy/local
       args:
-        BASE_IMAGE: ${OMB_BASE_IMAGE:-ghcr.io/milind-soni/openmausbot:v0.1.173}
+        BASE_IMAGE: ghcr.io/milind-soni/openmausbot:v0.1.173
         ENGINES: ${ENGINES:-@anthropic-ai/claude-code @openai/codex}
     restart: unless-stopped
     volumes:

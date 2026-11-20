@@ -1,0 +1,62 @@
+# Keeps the Coolify deployment on the newest upstream OpenMausBot release.
+# Daily: if milind-soni/OpenMausBot has a newer release whose image is on ghcr,
+# bump the pinned BASE_IMAGE in docker-compose.coolify.yaml and push to main.
+# Coolify's GitHub App webhook then redeploys automatically.
+name: Track OpenMausBot release (Coolify)
+
+on:
+  schedule:
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: coolify-track-release
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    if: github.repository == 'Malick44/OpenMausBot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bump pinned release if a newer one is published
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          file=docker-compose.coolify.yaml
+          latest=$(gh api repos/milind-soni/OpenMausBot/releases/latest --jq .tag_name)
+          if ! printf '%s' "$latest" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "Unexpected release tag '$latest'; not touching the pin." >&2
+            exit 1
+          fi
+          current=$(grep -oE 'openmausbot:v[0-9]+\.[0-9]+\.[0-9]+' "$file" | head -1 | cut -d: -f2)
+          echo "pinned=$current latest=$latest"
+          if [ "$current" = "$latest" ]; then
+            echo "Already on the newest release."
+            exit 0
+          fi
+          # Never move backwards (e.g. if a release is pulled).
+          newest=$(printf '%s\n%s\n' "${current#v}" "${latest#v}" | sort -V | tail -1)
+          if [ "v$newest" != "$latest" ]; then
+            echo "Latest release $latest is older than pinned $current; skipping."
+            exit 0
+          fi
+          # Only bump once the image is actually published.
+          token=$(curl -fsS "https://ghcr.io/token?scope=repository:milind-soni/openmausbot:pull" | jq -r .token)
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/milind-soni/openmausbot/manifests/$latest")
+          if [ "$code" != "200" ]; then
+            echo "Image ghcr.io/milind-soni/openmausbot:$latest not available yet (HTTP $code); will retry next run."
+            exit 0
+          fi
+          sed -i "s|openmausbot:${current}|openmausbot:${latest}|g" "$file"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Coolify: track OpenMausBot ${latest}"
+          git push origin HEAD:main

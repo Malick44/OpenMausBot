@@ -19,7 +19,7 @@ services:
     build:
       context: ./deploy/local
       args:
-        BASE_IMAGE: ghcr.io/milind-soni/openmausbot:v0.1.177
+        BASE_IMAGE: ghcr.io/milind-soni/openmausbot:v0.1.178
         ENGINES: ${ENGINES:-@anthropic-ai/claude-code @openai/codex}
     restart: unless-stopped
     volumes:
